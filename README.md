@@ -3,7 +3,7 @@ An online judge platform.
 
 ## Prerequisites
 
-* [Python 3.5+](https://www.python.org/downloads/)
+* [Python 3.6+](https://www.python.org/downloads/)
 * [MongoDB 3.0+](https://docs.mongodb.org/manual/installation/)
 * [Node.js 6.0+](https://nodejs.org/en/download/package-manager/)
 * [RabbitMQ](http://www.rabbitmq.com/)
@@ -11,10 +11,10 @@ An online judge platform.
 
 ## Install requirements
 
-In the root of the repository, where `requirements.txt` and `package.json` locates:
+In the root of the repository, where `Pipfile` and `package.json` locates:
 
 ```bash
-python3 -m pip install -r requirements.txt
+pipenv install  # You may have to install pipenv
 npm install   # cnpm install
 ```
 
@@ -46,6 +46,7 @@ You may also want to install [libmaxminddb](https://github.com/maxmind/libmaxmin
 In the root of the repository:
 
 ```bash
+npm run generate
 npm run build   # or: npm run build:watch
 python3 -m anubis.server --debug
 ```

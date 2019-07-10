@@ -1,3 +1,5 @@
+import base64
+
 import accept
 import asyncio
 import calendar
@@ -7,6 +9,8 @@ import logging
 import markupsafe
 import pytz
 import sockjs
+import time
+import traceback
 from aiohttp import web
 from email import utils
 
@@ -20,6 +24,7 @@ from anubis.model import domain
 from anubis.model import opcount
 from anubis.model.adaptor import setting
 from anubis.service import mailer
+from anubis.util import cipher
 from anubis.util import json
 from anubis.util import locale
 from anubis.util import options
@@ -198,12 +203,12 @@ class HandlerBase(setting.SettingMixin):
 
 
 class Handler(web.View, HandlerBase):
-    @asyncio.coroutine
-    def __iter__(self):
+
+    async def _iter(self):
         try:
             self.response = web.Response()
-            yield from HandlerBase.prepare(self)
-            yield from super(Handler, self).__iter__()
+            await HandlerBase.prepare(self)
+            await super(Handler, self)._iter()
         except error.UserFacingError as e:
             _logger.warning('User facing error: %s', repr(e))
             self.response.set_status(e.http_status, None)
@@ -217,7 +222,22 @@ class Handler(web.View, HandlerBase):
         except Exception as e:
             _logger.error('Unexpected exception occurred when handling %s (IP = %s, UID = %d): %s',
                           self.url, self.remote_ip, self.user['_id'] or None, repr(e))
-            raise
+            if options.options.debug:
+                raise
+            body = await self.request.read()
+            error_info = dict(
+                url=self.url,
+                method=self.request.method,
+                remote_ip=self.remote_ip,
+                uid=self.user['_id'],
+                time=int(time.time()),
+                headers=list(self.request.headers.items()),
+                body=base64.b64encode(body).decode('utf8'),
+                exc_stack=traceback.format_exc(),
+            )
+            error_json = json.encode(error_info)
+            error_message = cipher.encrypt(error_json.encode('utf8'))
+            self.render('500.html', error_message=error_message)
         return self.response
 
     def render(self, template_name, **kwargs):
@@ -236,7 +256,7 @@ class Handler(web.View, HandlerBase):
         if filename:
             self.response.headers['Content-Disposition'] = 'attachment; filename="{0}"'.format(filename)
         await self.response.prepare(self.request)
-        self.response.write(data)
+        await self.response.write(data)
 
     async def send_mail(self, mail, title, template_name, **kwargs):
         content = self.render_html(template_name, url_prefix=options.options.url_prefix, **kwargs)
@@ -327,10 +347,12 @@ def _reverse_url(name, *, domain_id, **kwargs):
     if domain_id != builtin.DOMAIN_ID_SYSTEM:
         name += '_with_domain_id'
         kwargs['domain_id'] = domain_id
+    for k, v in kwargs.items():
+        kwargs[k] = str(v)
     if kwargs:
-        return app.Application().router[name].url(parts=kwargs)
+        return str(app.Application().router[name].url_for(**kwargs))
     else:
-        return app.Application().router[name].url()
+        return str(app.Application().router[name].url_for())
 
 
 @functools.lru_cache()
@@ -399,14 +421,15 @@ def route_argument(func):
 def get_argument(func):
     @functools.wraps(func)
     def wrapped(self, **kwargs):
-        return func(self, **kwargs, **self.request.GET)
+        return func(self, **kwargs, **self.request.query)
     return wrapped
 
 
 def post_argument(func):
     @functools.wraps(func)
     async def wrapped(self, **kwargs):
-        return await func(self, **kwargs, **dict(await self.request.post()))
+        data = dict(await self.request.post())
+        return await func(self, **kwargs, **data)
     return wrapped
 
 

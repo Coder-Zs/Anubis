@@ -102,7 +102,7 @@ class ContestDetailHandler(base.OperationHandler, ContestStatusMixin):
             attended = tsdoc.get('attend') == 1
             for pdetail in tsdoc.get('detail', []):
                 psdict[pdetail['pid']] = pdetail
-            rdict = await record.get_dict(psdoc['rid'] for psdoc in psdict.values())
+            rdict = await record.get_dict([psdoc['rid'] for psdoc in psdict.values()], get_hidden=True)
         else:
             attended = False
         # discussion
@@ -151,18 +151,23 @@ class ContestCodeHandler(base.OperationHandler):
         tdoc, tsdocs = await contest.get_and_list_status(self.domain_id, tid)
         rnames = {}
         for tsdoc in tsdocs:
+            udoc = await user.get_by_uid(tsdoc['uid'])
             for pdetail in tsdoc.get('detail', []):
-                rnames[pdetail['rid']] = 'U{}_P{}_R{}'.format(tsdoc['uid'], pdetail['pid'], pdetail['rid'])
+                rnames[pdetail['rid']] = '{}/{}_{}'.format(contest.convert_to_letter(tdoc['pids'], pdetail['pid']),
+                                                           udoc['uname'],
+                                                           pdetail['rid'])
         output_buffer = io.BytesIO()
-        zip_file = zipfile.ZipFile(output_buffer, 'a', zipfile.ZIP_DEFLATED)
+        zip_file = zipfile.ZipFile(output_buffer, 'w', zipfile.ZIP_DEFLATED)
         rdocs = record.get_multi(get_hidden=True, _id={'$in': list(rnames.keys())})
         async for rdoc in rdocs:
-            zip_file.writestr(rnames[rdoc['_id']] + '.' + rdoc['lang'], rdoc['code'])
+            zip_file.writestr('{}.{}'.format(rnames[rdoc['_id']], rdoc['lang']), rdoc['code'])
         for zfile in zip_file.filelist:
             zfile.create_system = 0
         zip_file.close()
 
-        await self.binary(output_buffer.getvalue(), 'application/zip')
+        await self.binary(output_buffer.getvalue(),
+                          'application/zip',
+                          filename='{}_{}.zip'.format(tdoc['_id'], tdoc['title']))
 
 
 @app.route('/contest/{tid:\d{4,}}/{letter:[A-Z]}', 'contest_detail_problem')
@@ -207,8 +212,8 @@ class ContestBalloonHandler(base.OperationHandler, ContestStatusMixin):
     @base.sanitize
     async def get(self, *, tid: int):
         tdocs = await contest.get_multi(self.domain_id, **{'begin_at': {'$lte': self.now},
-                                                           'end_at': {'$gt': self.now}},
-                                        projection={'_id': True}).to_list(None)
+                                                           'end_at': {'$gt': self.now}}).to_list(None)
+        tdocs_dict = {tdoc['_id']: tdoc for tdoc in tdocs}
         tids = [tdoc['_id'] for tdoc in tdocs]
         query = {'domain_id': self.domain_id,
                  'tid': {'$in': list(set(tids))},
@@ -230,7 +235,7 @@ class ContestBalloonHandler(base.OperationHandler, ContestStatusMixin):
         for balloon in balloons:
             balloon.update({'uname': udict[balloon['uid']]['uname'],
                             'nickname': udict[balloon['uid']].get('nickname', ''),
-                            'letter': contest.convert_to_letter(tdoc['pids'], balloon['pid'])})
+                            'letter': contest.convert_to_letter(tdocs_dict[balloon['tid']]['pids'], balloon['pid'])})
         if not self.prefer_json:
             path_components = self.build_path(
                 (self.translate('contest_main'), self.reverse_url('contest_main')),
@@ -405,14 +410,15 @@ class ContestEditHandler(base.Handler, ContestStatusMixin):
         attended = tsdoc and tsdoc.get('attend') == 1
         duration = (tdoc['end_at'] - tdoc['begin_at']).total_seconds() / 3600  # Seconds to hours
         pids = ','.join(list(map(str, tdoc['pids'])))
+        dt = pytz.utc.localize(tdoc['begin_at']).astimezone(self.timezone)
         path_components = self.build_path(
             (self.translate('contest_main'), self.reverse_url('contest_main')),
             (tdoc['title'], self.reverse_url('contest_detail', tid=tdoc['_id'])),
             (self.translate('contest_edit'), None))
         self.render('contest_edit.html', tdoc=tdoc, udoc=udoc,
                     duration=duration, pids=pids, attended=attended,
-                    date_text=tdoc['begin_at'].strftime('%Y-%m-%d'),
-                    time_text=tdoc['begin_at'].strftime('%H:%M'),
+                    date_text=dt.strftime('%Y-%m-%d'),
+                    time_text=dt.strftime('%H:%M'),
                     page_title=tdoc['title'], path_components=path_components)
 
     @base.require_priv(builtin.PRIV_USER_PROFILE)
